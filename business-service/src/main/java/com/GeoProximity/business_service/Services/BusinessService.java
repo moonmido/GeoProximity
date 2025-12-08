@@ -1,5 +1,6 @@
 package com.GeoProximity.business_service.Services;
 
+import com.GeoProximity.business_service.Events.BusinessEvent;
 import com.GeoProximity.business_service.Models.MyBusiness;
 import com.GeoProximity.business_service.Repository.MyBusinessRepository;
 import jakarta.ws.rs.NotFoundException;
@@ -15,14 +16,14 @@ public class BusinessService {
 
     private final MyBusinessRepository repository;
     private final RedisTemplate<String,Object> redisTemplate;
-    private final KafkaTemplate<String,Object> kafkaTemplate;
+    private final KafkaTemplate<String,BusinessEvent> kafkaTemplate;
 
     private static final String BUSINESS_KEY = "business:";
     private static final String BUSINESS_ALL_KEY = "business:all";
     private static final Duration CACHE_TTL = Duration.ofMinutes(10);
 
 
-    public BusinessService(MyBusinessRepository repository, RedisTemplate<String, Object> redisTemplate, KafkaTemplate<String, Object> kafkaTemplate) {
+    public BusinessService(MyBusinessRepository repository, RedisTemplate<String, Object> redisTemplate, KafkaTemplate<String, BusinessEvent> kafkaTemplate) {
         this.repository = repository;
         this.redisTemplate = redisTemplate;
         this.kafkaTemplate = kafkaTemplate;
@@ -34,30 +35,44 @@ public class BusinessService {
 
         if (myBusiness == null)
             throw new IllegalArgumentException("Invalid input");
+
         MyBusiness saved = repository.save(myBusiness);
+
         redisTemplate.opsForValue()
                 .set(BUSINESS_KEY + saved.getBusiness_id(), saved, CACHE_TTL);
         redisTemplate.delete(BUSINESS_ALL_KEY);
-        kafkaTemplate.send("business_created", saved);
-        return saved;
 
+        kafkaTemplate.send(
+                "business-events",
+                toEvent(saved, BusinessEvent.EventType.CREATED)
+        );
+
+        return saved;
     }
+
 
 
     //Delete An exist Business
     public void removeBusiness(long id) {
+
         if (id <= 0)
             throw new IllegalArgumentException("Invalid id");
 
-        if (!repository.existsById(id))
-            throw new NotFoundException("Business not found");
+        MyBusiness business = repository.findById(id)
+                .orElseThrow(() -> new NotFoundException("Business not found"));
 
         repository.deleteById(id);
+
         redisTemplate.delete(BUSINESS_KEY + id);
         redisTemplate.delete(BUSINESS_ALL_KEY);
 
-        kafkaTemplate.send("business_deleted", id);
+        BusinessEvent event = new BusinessEvent();
+        event.setBusinessId(id);
+        event.setEventType(BusinessEvent.EventType.DELETED);
+
+        kafkaTemplate.send("business-events", event);
     }
+
 
 
     //Update An exist Business
@@ -80,14 +95,16 @@ public class BusinessService {
 
         redisTemplate.opsForValue()
                 .set(BUSINESS_KEY + id, saved, CACHE_TTL);
-
         redisTemplate.delete(BUSINESS_ALL_KEY);
 
-        kafkaTemplate.send("business_updated", saved);
+        kafkaTemplate.send(
+                "business-events",
+                toEvent(saved, BusinessEvent.EventType.UPDATED)
+        );
 
         return saved;
-
     }
+
 
     //Get Business By id
 
@@ -124,6 +141,19 @@ public class BusinessService {
                 .set(BUSINESS_ALL_KEY, businesses, Duration.ofMinutes(5));
 
         return businesses;
+    }
+
+    private BusinessEvent toEvent(MyBusiness business, BusinessEvent.EventType type) {
+        BusinessEvent event = new BusinessEvent();
+        event.setBusinessId(business.getBusiness_id());
+        event.setAddress(business.getAddress());
+        event.setCity(business.getCity());
+        event.setCountry(business.getCountry());
+        event.setState(business.getState());
+        event.setLatitude(business.getLatitude());
+        event.setLongitude(business.getLongtitude());
+        event.setEventType(type);
+        return event;
     }
 
 
